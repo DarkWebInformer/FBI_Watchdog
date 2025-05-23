@@ -7,7 +7,7 @@ import signal
 import random
 import socks
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import dns.resolver
 import requests
 import platform
@@ -109,7 +109,7 @@ ascii_banner = r"""
      _,-' ,'`-__; '--.
     (_/'~~      ''''(;                                                    
 
-[bold blue]FBI Watchdog v2.0.2 by [link=https://darkwebinformer.com]Dark Web Informer[/link][/bold blue]
+[bold blue]FBI Watchdog v2.1.0 by [link=https://darkwebinformer.com]Dark Web Informer[/link][/bold blue]
 """
 
 console.print(Padding(f"[bold blue]{ascii_banner}[/bold blue]", (0, 0, 0, 4)))
@@ -172,7 +172,7 @@ def send_request(url, data=None, use_tor=False):
 
 # Send Telegram notification for DNS changes or seizure detection
 def telegram_notify(domain, record_type, records, previous_records, seizure_capture=None):
-    detected_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    detected_time = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     previous_records = previous_records if isinstance(previous_records, list) else []
     records = records if isinstance(records, list) else []
@@ -505,7 +505,9 @@ def watch_dog():
                 if exit_flag:
                     break
                 console.print("")
-                console.print(Padding(f"[bold green]→ {(i / len(domains)) * 100:.0f}% complete[/bold green]", (0, 0, 0, 4)))
+
+                if i < len(domains):
+                    console.print(Padding(f"[bold green]→ {(i / len(domains)) * 100:.0f}% complete[/bold green]", (0, 0, 0, 4)))
 
                 for record_type in dnsRecords:
                     if exit_flag:
@@ -529,40 +531,53 @@ def watch_dog():
 
                     # Ensure prev_entry is a dictionary before accessing keys
                     if not isinstance(prev_entry, dict):
-                        prev_entry = {"records": []}  # Reset to an empty dictionary if it's not
+                        prev_entry = {"records": []}
 
                     prev_sorted_records = sorted(prev_entry["records"])
 
                     if domain not in previous_results:
                         previous_results[domain] = {}
 
+                    # Load history of previous record sets for this domain/record type
+                    history = previous_results[domain].get(record_type, {}).get("history", [])
+
+                    if sorted_records in history or exit_flag:
+                        continue
+
+                    console.print("")
+                    console.print(Padding(f"→ Change detected: {domain} ({record_type})", (0, 0, 0, 4)))
+
+                    formatted_previous = "\n".join(f"   - {entry}" for entry in history[-1]) if history else "   - None"
+                    formatted_new = "\n".join(f"   - {entry}" for entry in sorted_records) or "   - None"
+
+                    console.print("")
+                    console.print(Padding(f"[yellow]→ Previous Records:[/yellow]\n[yellow]{formatted_previous}[/yellow]", (0, 0, 0, 4)))
+                    console.print("")
+                    console.print(Padding(f"[green]→ New Records:[/green]\n[green]{formatted_new}[/green]", (0, 0, 0, 4)))
+                    console.print("")
+
+                    seizure_capture = None
+                    if record_type == "NS" and any(ns in sorted_records for ns in [
+                        "ns1.fbi.seized.gov.", "ns2.fbi.seized.gov.",
+                        "jocelyn.ns.cloudflare.com.", "plato.ns.cloudflare.com.",
+                        "ns1.usssdomainseizure.com", "ns2.usssdomainseizure.com"
+                    ]):
+                        console.print(Padding(f"→ Taking seizure screenshot for {domain} (FBI Seized NS Detected)", (0, 0, 0, 4)))
+                        seizure_capture = capture_seizure_image(domain)
+
+                    discord_notify(domain, record_type, sorted_records, history[-1] if history else [], seizure_capture)
+                    telegram_notify(domain, record_type, sorted_records, history[-1] if history else [], seizure_capture)
+
+                    # Update stored results and append to history
+                    history.append(sorted_records)
                     previous_results[domain][record_type] = {
-                        "records": sorted_records
+                        "records": sorted_records,
+                        "history": history[-10:]  # limit history to last 10 changes
                     }
 
-                    if sorted_records != prev_sorted_records and not exit_flag:
-                        console.print("")
-                        console.print(Padding(f"→ Change detected: {domain} ({record_type})", (0, 0, 0, 4)))
-                        formatted_previous = "\n".join(f"   - {entry}" for entry in prev_sorted_records) or "   - None"
-                        formatted_new = "\n".join(f"   - {entry}" for entry in sorted_records) or "   - None"
-                        console.print("")
-                        console.print(Padding(f"[yellow]→ Previous Records:[/yellow]\n[yellow]{formatted_previous}[/yellow]", (0, 0, 0, 4)))
-                        console.print("")
-                        console.print(Padding(f"[green]→ New Records:[/green]\n[green]{formatted_new}[/green]", (0, 0, 0, 4)))
-                        console.print("")
+            # ✅ Show this once after all domains are processed
+            console.print(Padding("[bold green]→ 100% complete[/bold green]", (0, 0, 0, 4)))
 
-                        seizure_capture = None
-                        if record_type == "NS" and any(ns in sorted_records for ns in ["ns1.fbi.seized.gov.", "ns2.fbi.seized.gov.", "jocelyn.ns.cloudflare.com.", "plato.ns.cloudflare.com.", "ns1.usssdomainseizure.com", "ns2.usssdomainseizure.com"]):
-                            console.print(Padding(f"→ Taking seizure screenshot for {domain} (FBI Seized NS Detected)", (0, 0, 0, 4)))
-                            seizure_capture = capture_seizure_image(domain)
-
-                        discord_notify(domain, record_type, sorted_records, prev_sorted_records, seizure_capture)
-                        telegram_notify(domain, record_type, sorted_records, prev_sorted_records, seizure_capture)
-
-                # Add a delay between domains
-                time.sleep(random.uniform(3, 6))
-
-            # Ensure Tor is running before checking .onion sites
             if is_tor_running():
                 console.print("")
                 console.print(Padding(f"→ Configuring Firefox to route traffic through Tor...", (0, 0, 0, 4)))
@@ -575,11 +590,10 @@ def watch_dog():
                 console.print("")
                 console.print(Padding("[bold green]→ Onion scan complete. Snoozing for 60 seconds...[/bold green]\n", (0, 0, 0, 4)))
 
-            # ✅ Save results after both DNS and .onion scans
             if not exit_flag:
                 save_previous_results()
                 console.print(Padding("[bold green]→ FBI Watchdog shift complete. Snoozing for 60 seconds...[/bold green]\n", (0, 0, 0, 4)))
-                time.sleep(60)  # Snooze before next shift
+                time.sleep(15)
 
     except KeyboardInterrupt:
         exit_flag = True
