@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.0] - 2025-05-23
+### Added
+- Resolved false positives showing after an initial change is detected, it would loop over and over.
+
+---
+
 ## [2.0.2] - 2025-03-06
 ### Added
 - Added "ns1.usssdomainseizure.com", "ns2.usssdomainseizure.com"
